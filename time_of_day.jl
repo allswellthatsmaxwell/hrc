@@ -1,32 +1,47 @@
-using SQLite
+using SQLite, DataFrames
 
-f(x::Int) = x + 1
-nullable_to_array(ar) = map(dat -> dat.value, ar).values
-colapply(fn, df) = convert(DataFrame, colwise(fn, df))
+nullable_to_array(nullable_ar) = map(dat -> dat.value, nullable_ar).values
+
+## Parse, combine and return date_string and time_string
+## to return them as a single timestamp.
+function combine_date_time(date_string, time_string)
+    month_str, day, year = split(replace(date_string, ",", " "))
+    hourmin, ampm = split(time_string)
+    hour, min = map(n -> parse(Int, n), split(hourmin, ":"))
+    hour = hour + if (lowercase(ampm) == "pm" && hour != 12) 12 else 0 end
+    timestamp = DateTime(parse(Int, year),
+                         Dates.MONTHTOVALUE["english"][month_str],
+                         parse(Int, day),
+                         hour,
+                         min)
+end    
 
 emailsdb = SQLite.DB("../output/database.sqlite")
-senttimes = SQLite.query(emailsdb, 
-                         "select ExtractedFrom, ExtractedDateSent from emails;")
-names!(senttimes, [:sender, :timesent])
-senttimes[:sender]     = nullable_to_array(senttimes[:sender])
-senttimes[:timesent] = nullable_to_array(senttimes[:timesent])
+q = readall(open("pull_emails.sql"))
+emails = SQLite.query(emailsdb, q)
 
-rows_with_names = map(s -> length(s) > 0, senttimes[:sender])
-rows_with_times = map(timestamp -> ismatch(r"\d:\d\d [AP]M", timestamp), senttimes[:timesent])
+for n in names(emails)
+    emails[n] = nullable_to_array(emails[n])
+end
 
-senttimes = senttimes[map(&, rows_with_names, rows_with_times), :]
+###### Convert date and time information into DateTimes. ######
+month_names = collect(keys(Dates.MONTHTOVALUE["english"]))
+date_regex = Regex("(" * join(month_names, "|") * ") \\d{1,2}[, ]*\\d{4}")
+time_regex = r"[012]?\d:\d\d [AP]M"
 
-times = map(s -> match(r"[012]?\d:\d\d [AP]M", s), senttimes[:timesent])
+# missing 49 dates and 0 times with current regexes
+dates = map(s -> match(date_regex, lowercase(s)), emails[:timesent])
+times = map(s -> match(time_regex, s), emails[:timesent])
 
+good_date_ind = convert(Array{Bool,1}, map(d -> d != nothing, dates))
+good_time_ind = convert(Array{Bool,1}, map(d -> d != nothing, times))
+both_good_ind = map(&, good_date_ind, good_time_ind)
 
-# Great! Only B6 missed. Now need to normalize names. Start by replacing periods with ", ".
-unique_names = senttimes[convert(DataArray{Bool, 1},
-                                 map(s -> s == nothing ? true : false,
-                                     map(s -> match(r"[A-z]+[.,]? ?[A-z]+|^H", s),
-                                         senttimes[:sender]))),
-                         :]
+dates = map(regex_match -> regex_match.match, dates[both_good_ind])
+times = map(regex_match -> regex_match.match, times[both_good_ind])
+emails = emails[both_good_ind, :]
 
-# still have 359 misses with the regex below: sum(map(s -> s == nothing ? 1 : 0, map(s -> match(r"[A-z]+,? [A-z]+|^H", s), senttimes[1])))
-#unique_names = unique(map(r -> r == nothing ? nothing : r.match,
-#                          map(s -> match(r"[A-z]+,? [A-z]+|^H", s),
-#                              senttimes[1]))) # incomplete
+emails[:timestamp] = map(i -> combine_date_time(dates[i], times[i]),
+                         1:size(dates)[1])
+######
+
