@@ -4,8 +4,10 @@ const MINS_IN_HOUR = 60
 const HOURS_IN_DAY = 24
 const MONTH_INDICES = 1:12
 
+## Returns a hashmap mapping lowercase name of month to month index
+## (e.g. february => 2)
 function get_month_names()
-    Dict(lowercase(monthname(i)) => i for i in MONTH_INDICES)
+    Dict(lowercase(Dates.monthname(i)) => i for i in MONTH_INDICES)
 end
 
 ## Parse, combine and return date_string and time_string
@@ -22,40 +24,82 @@ function combine_date_time(date_string, time_string)
                          min)
 end
 
+## Returns a regex to try and match the most dates
+## possible in the dataset.
+function make_date_regex(month_names)
+    Regex("(" * join(month_names, "|") * ") \\d{1,2}[, ]*\\d{4}")    
+end
+
+## Returns a regex to try and match the most times
+## possible in the dataset.
+function make_time_regex() r"[012]?\d:\d\d [AP]M" end
+
+## Returns a boolean array where element i is true if both
+##  dates[i] and times[i] were not nothing
+function get_rowinds_with_matchable_datetime(dates, times)
+    good_date_ind = convert(Array{Bool,1}, map(d -> d != nothing, dates))
+    good_time_ind = convert(Array{Bool,1}, map(d -> d != nothing, times))
+    both_good_ind = map(&, good_date_ind, good_time_ind)
+    both_good_ind
+end
+
+## Maps timestamp to a numeric of the form h.p..., where
+## h the number of hours since midnight and p is the percentage
+## of the hour that had passed (e.g. 30 minutes is 0.5 hours).
+## So e.g. 6:45PM April 3rd 2018 becomes 18.75.
+function timestamp_to_decimal(timestamp)
+    Dates.hour(timestamp) + (Dates.minute(timestamp) / MINS_IN_HOUR)
+end
+
+## Returns a dataframe with one row per time of day that occurred,
+## and a count of how many times it occurred.
+function time_of_day_counts(decimal_times)
+    counts = StatsBase.countmap(decimal_times)
+    counts_frame = convert(DataFrame, hcat(collect(keys(counts)),
+                                           collect(values(counts))))
+    names!(counts_frame, [:time, :count])
+    sort(counts_frame, cols = :time)
+end
+
+## Attempts to parse :timesent in each row of emails_frame
+## into a datetime, puts it in the (new) column :timestamp,
+## and returns the dataframe. Rows where :timesent cannot
+## be parsed are dropped.
+function get_rows_with_coherent_datetime(emails_frame)
+    date_regex = make_date_regex(keys(get_month_names()))
+    time_regex = make_time_regex()
+
+    # still missing some dates and times with current regexes
+    date_matches = map(s -> match(date_regex, lowercase(s)),
+                       emails_frame[:timesent])
+    time_matches = map(s -> match(time_regex, s),
+                       emails_frame[:timesent])
+
+    both_good_ind = get_rowinds_with_matchable_datetime(date_matches,
+                                                        time_matches)
+
+    dates = map(regex_match -> regex_match.match, date_matches[both_good_ind])
+    times = map(regex_match -> regex_match.match, time_matches[both_good_ind])
+    
+    timestampable_emails = emails_frame[both_good_ind, :]
+    timestampable_emails[:timestamp] = map(combine_date_time, dates, times)
+    timestampable_emails
+end
+
 emailsdb = SQLite.DB("../data/database.sqlite")
 q = readstring(open("../sql/pull_emails.sql"))
-emails = SQLite.query(emailsdb, q)
+all_emails = SQLite.query(emailsdb, q)
 
-###### Convert date and time information into DateTimes. ######
-month_names = keys(get_month_names())
-date_regex = Regex("(" * join(month_names, "|") * ") \\d{1,2}[, ]*\\d{4}")
-time_regex = r"[012]?\d:\d\d [AP]M"
+emails = get_rows_with_coherent_datetime(all_emails)
 
-# missing 49 dates and 0 times with current regexes
-dates = map(s -> match(date_regex, lowercase(s)), emails[:timesent])
-times = map(s -> match(time_regex, s), emails[:timesent])
+emails[:decimal_time_sent] = map(timestamp_to_decimal, emails[:timestamp])
 
-good_date_ind = convert(Array{Bool,1}, map(d -> d != nothing, dates))
-good_time_ind = convert(Array{Bool,1}, map(d -> d != nothing, times))
-both_good_ind = map(&, good_date_ind, good_time_ind)
 
-dates = map(regex_match -> regex_match.match, dates[both_good_ind])
-times = map(regex_match -> regex_match.match, times[both_good_ind])
-emails = emails[both_good_ind, :]
-
-emails[:timestamp] = map(i -> combine_date_time(dates[i], times[i]),
-                         1:size(dates)[1])
-emails[:decimal_time_sent] = map(t -> Dates.hour(t) + (Dates.minute(t) /
-                                                       MINS_IN_HOUR),
-                                 emails[:timestamp])
-######
+## Still a mess beyond here! ###################################################
 
 ## https://groups.google.com/forum/#!topic/julia-users/6sADBFLsOcA
 
-minute_counts = StatsBase.countmap(emails[:decimal_time_sent]) |>
-    hsh -> convert(DataFrame, hcat(collect(keys(hsh)),
-                                   collect(values(hsh)))) |>
-    d -> sort(d, cols = :x1)
+time_counts = time_of_day_counts(emails[:decimal_time_sent])
 
 #### plot clock
 jake   = emails[emails[:name_from] .== "Jake Sullivan", :]
