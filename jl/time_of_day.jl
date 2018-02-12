@@ -86,6 +86,29 @@ function get_rows_with_coherent_datetime(emails_frame)
     timestampable_emails
 end
 
+## Draws a plot that looks like a clock (without hands; hours 0 - 23).
+function get_clock_base_plot()    
+    ax = plt[:subplot](111, polar = "true")
+    plt[:setp](ax[:get_yticklabels](), visible = false)
+    ax[:set_xticks](linspace(0, 2π, HOURS_IN_DAY + 1))
+    ax[:set_xticklabels](0:(HOURS_IN_DAY - 1))
+    ax[:set_theta_direction](-1)
+    ax[:set_theta_offset](π / 2)
+    ax 
+end
+
+function plot_email_times(ax, decimal_times)
+    ax[:bar](left = decimal_times,
+             height = fill(1, length(decimal_times)),##fill(graphical_step_size, size(person_times)[1]),
+             width = 1 / (MINS_IN_HOUR * HOURS_IN_DAY),
+             bottom = 0,##loc, #curr_el
+             edgecolor = "#C46536")
+end
+
+function plot_email_times(decimal_times)
+    plot_email_times(get_clock_base_plot(), decimal_times)
+end
+    
 emailsdb = SQLite.DB("../data/database.sqlite")
 q = readstring(open("../sql/pull_emails.sql"))
 all_emails = SQLite.query(emailsdb, q)
@@ -94,31 +117,26 @@ emails = get_rows_with_coherent_datetime(all_emails)
 
 emails[:decimal_time_sent] = map(timestamp_to_decimal, emails[:timestamp])
 
-
-## Still a mess beyond here! ###################################################
-
-## https://groups.google.com/forum/#!topic/julia-users/6sADBFLsOcA
-
 time_counts = time_of_day_counts(emails[:decimal_time_sent])
 
-#### plot clock
-jake   = emails[emails[:name_from] .== "Jake Sullivan", :]
+jake = emails[emails[:name_from] .== "Jake Sullivan", :]
 cheryl = emails[emails[:name_from] .== "Cheryl Mills", :]
 
-ax = plt[:subplot](111, polar = "true")
-plt[:setp](ax[:get_yticklabels](), visible = false)
-ax[:set_xticks](linspace(0, 2π, HOURS_IN_DAY + 1))
-ax[:set_xticklabels](0 : HOURS_IN_DAY+1)
-ax[:set_theta_direction](-1)
-ax[:set_theta_offset](π / 2)
+plot_email_times(jake[:decimal_time_sent])
+plot_email_times(cheryl[:decimal_time_sent])
+
+## Still a mess beyond here! ###################################################
 
 people = unique(emails[:name_from])[1:5, :]
 graphical_step_size = 1.0 / length(people)
 graphical_step_iter = countfrom(0, graphical_step_size)
 
-people_colors = Colors.distinguishable_colors(12, [RGB(1,1,1)])[2:end]
+people_colors = Colors.distinguishable_colors(length(people) + 1)[2:end]
+test_colors = ["#2a2dff","#ff81fa","#00e399","#3c3c3c","#ff1f1f"]
+people_colors = test_colors
 #curr_el = start(graphical_step_iter)
 
+ax = get_clock_base_plot()
 for (person, color, loc) in zip(people, people_colors, graphical_step_iter)
     #curr_el = next(graphical_step_iter, curr_el)[2]
     person_times = emails[emails[:name_from] .== person, :]
@@ -126,7 +144,7 @@ for (person, color, loc) in zip(people, people_colors, graphical_step_iter)
              height = fill(graphical_step_size, size(person_times)[1]),
              width = 1 / (MINS_IN_HOUR * HOURS_IN_DAY),
              bottom = loc, #curr_el
-             edgecolor = "#C46536")
+             edgecolor = color)
 end
 plt[:ylim](0,1)
 plt[:show]()
